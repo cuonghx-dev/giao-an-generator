@@ -1,0 +1,5 @@
+.DS_Store
+__pycache__/
+*.pyc
+output/
+giao_an_output.xlsx
