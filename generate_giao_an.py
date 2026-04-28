@@ -2,8 +2,8 @@
 """
 Giáo Án Generator - Generates lesson plan Excel files.
 
-Combines a schedule file (.xlsx) with content files (.zip of .xlsx)
-to produce a lesson plan with 5 sheets (Mon-Fri).
+Combines a schedule file (.xlsx) with content files (.xlsx combined,
+.zip of .xlsx, or a directory) to produce a lesson plan with 5 sheets (Mon-Fri).
 
 See docs/workflow.md for full documentation.
 """
@@ -128,15 +128,18 @@ def match_score(a, b):
 
 
 def parse_all_content_files(content_path):
-    """Parse all content files from a .zip or directory. Returns dict of name -> activity block."""
+    """Parse all content files from a .xlsx, .zip, or directory. Returns dict of name -> activity block."""
     all_activities = {}
 
-    if zipfile.is_zipfile(content_path):
-        _parse_from_zip(content_path, all_activities)
-    elif os.path.isdir(content_path):
+    # Check directory and .xlsx before zip — .xlsx is a zip internally
+    if os.path.isdir(content_path):
         _parse_from_dir(content_path, all_activities)
+    elif os.path.isfile(content_path) and content_path.lower().endswith('.xlsx'):
+        _parse_from_xlsx_combined(content_path, all_activities)
+    elif zipfile.is_zipfile(content_path):
+        _parse_from_zip(content_path, all_activities)
     else:
-        print(f"Lỗi: '{content_path}' không phải file zip hoặc thư mục hợp lệ.")
+        print(f"Lỗi: '{content_path}' không phải file .xlsx, .zip hoặc thư mục hợp lệ.")
         sys.exit(1)
 
     return all_activities
@@ -184,6 +187,85 @@ def _parse_from_dir(dir_path, all_activities):
             norm = normalize_name(name)
             all_activities[name] = block
             all_activities[norm] = block
+
+
+def _parse_from_xlsx_combined(xlsx_path, all_activities):
+    """Parse a single combined xlsx with 4 TIẾT laid out horizontally.
+
+    Layout: each row is one activity type. 4 TIẾT column groups start at
+    cols 2, 9, 16, 23. Each group has 7 cols: name, standard, objective,
+    success, steps, materials, prep.
+    """
+    wb = openpyxl.load_workbook(xlsx_path, data_only=True)
+    ws = wb.active
+
+    # Find header row containing 'Tên Hoạt động' (typically row 5)
+    header_row = None
+    for r in range(1, min(20, ws.max_row + 1)):
+        v = ws.cell(row=r, column=2).value
+        if v and 'Tên Hoạt động' in str(v):
+            header_row = r
+            break
+    if header_row is None:
+        print(f"Cảnh báo: không tìm thấy header 'Tên Hoạt động' trong '{xlsx_path}'")
+        return
+
+    tiet_starts = [2, 9, 16, 23]
+    last_type = ''
+
+    for r in range(header_row + 1, ws.max_row + 1):
+        type_val = ws.cell(row=r, column=1).value
+        if type_val:
+            last_type = str(type_val).strip()
+        type_str = last_type
+
+        for tiet_start in tiet_starts:
+            name_val = ws.cell(row=r, column=tiet_start).value
+            if not name_val:
+                continue
+            name = str(name_val).strip()
+            if not name:
+                continue
+
+            standard = ws.cell(row=r, column=tiet_start + 1).value
+            objective = ws.cell(row=r, column=tiet_start + 2).value
+            success = ws.cell(row=r, column=tiet_start + 3).value
+            steps = ws.cell(row=r, column=tiet_start + 4).value
+            materials = ws.cell(row=r, column=tiet_start + 5).value
+            prep = ws.cell(row=r, column=tiet_start + 6).value
+
+            prep_parts = []
+            if materials:
+                prep_parts.append(str(materials).strip())
+            if prep:
+                prep_parts.append(str(prep).strip())
+            prep_combined = '\n'.join(p for p in prep_parts if p) or None
+
+            col_a = f"{type_str}\n{name}" if type_str else name
+
+            row_data = {
+                1: col_a,
+                2: str(standard).strip() if standard else None,
+                3: str(objective).strip() if objective else None,
+                4: str(success).strip() if success else None,
+                5: prep_combined,
+                6: str(steps).strip() if steps else None,
+                7: None,
+                8: None,
+                9: None,
+            }
+
+            block = {
+                'num_rows': 1,
+                'rows': [row_data],
+                'merges': [],
+                'objectives_summary': str(objective).strip() if objective else '',
+                'name': nfc(name),
+            }
+
+            name_nfc = nfc(name)
+            all_activities[name_nfc] = block
+            all_activities[normalize_name(name_nfc)] = block
 
 
 def find_activity_blocks(ws, ws_formulas):
@@ -790,8 +872,8 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Ví dụ:
-  %(prog)s -s ke_hoach.xlsx -c noi_dung.zip --class "Vega 12"
-  %(prog)s -s ke_hoach.xlsx -c noi_dung.zip --all
+  %(prog)s -s ke_hoach.xlsx -c noi_dung.xlsx --class "Vega 12"
+  %(prog)s -s ke_hoach.xlsx -c noi_dung.xlsx --all
   %(prog)s -s ke_hoach.xlsx -c noi_dung.zip --all -o output/
   %(prog)s -s ke_hoach.xlsx --list-classes
 
@@ -807,7 +889,7 @@ Xem docs/workflow.md để biết thêm chi tiết.
     parser.add_argument(
         '--content', '-c',
         metavar='PATH',
-        help='Đường dẫn nội dung bài học (.zip hoặc thư mục chứa các file .xlsx)',
+        help='Đường dẫn nội dung bài học (.xlsx, .zip, hoặc thư mục chứa các file .xlsx)',
     )
 
     group = parser.add_mutually_exclusive_group()

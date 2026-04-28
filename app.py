@@ -51,8 +51,8 @@ with col1:
     )
 with col2:
     content_upload = st.file_uploader(
-        "Nội dung bài học (.zip)",
-        type=["zip"],
+        "Nội dung bài học (.xlsx hoặc .zip)",
+        type=["xlsx", "zip"],
         key="content",
     )
 
