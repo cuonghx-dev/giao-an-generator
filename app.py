@@ -8,28 +8,25 @@ import zipfile
 from pathlib import Path
 
 import streamlit as st
-import openpyxl
+
+from generate_giao_an_v2 import get_all_classes
 
 REPO_ROOT = Path(__file__).resolve().parent
-CLI_SCRIPT = REPO_ROOT / "generate_giao_an.py"
+CLI_SCRIPT = REPO_ROOT / "generate_giao_an_v2.py"
+
+# A class that runs longer than this is skipped.
+TIMEOUT_SECONDS = 180
 
 
 st.set_page_config(page_title="Giáo Án Generator", page_icon="📚", layout="centered")
 st.title("📚 Giáo Án Generator")
-st.caption("Tạo giáo án từ kế hoạch giảng dạy và nội dung bài học.")
+st.caption("Tạo giáo án từ kế hoạch giảng dạy theo tuần và file nội dung chi tiết.")
 
 
 def save_upload(uploaded_file, dest_dir: Path) -> Path:
     path = dest_dir / uploaded_file.name
     path.write_bytes(uploaded_file.getbuffer())
     return path
-
-
-def list_classes_from_schedule(schedule_path: Path) -> list[str]:
-    wb = openpyxl.load_workbook(schedule_path, read_only=True)
-    names = [name.strip() for name in wb.sheetnames]
-    wb.close()
-    return names
 
 
 def zip_outputs(output_dir: Path) -> bytes:
@@ -51,8 +48,8 @@ with col1:
     )
 with col2:
     content_upload = st.file_uploader(
-        "Nội dung bài học (.xlsx hoặc .zip)",
-        type=["xlsx", "zip"],
+        'Nội dung chi tiết "KH chi tiết" (.xlsx)',
+        type=["xlsx"],
         key="content",
     )
 
@@ -71,25 +68,23 @@ content_path = save_upload(content_upload, workdir)
 # --- Step 2: Pick classes ---
 st.subheader("2. Chọn lớp")
 try:
-    all_classes = list_classes_from_schedule(schedule_path)
+    all_classes = get_all_classes(schedule_path)
 except Exception as e:
     st.error(f"Không đọc được file kế hoạch: {e}")
     st.stop()
 
 if not all_classes:
-    st.error("File kế hoạch không có sheet nào.")
+    st.error("File kế hoạch không có sheet lớp nào.")
     st.stop()
 
-select_all = st.checkbox(f"Tất cả ({len(all_classes)} lớp)", value=True)
-if select_all:
-    selected_classes = all_classes
-    st.write(", ".join(all_classes))
-else:
-    selected_classes = st.multiselect(
-        "Lớp cần tạo giáo án",
-        options=all_classes,
-        default=[],
-    )
+# All classes start ticked — generating for every class is the common case.
+checkbox_cols = st.columns(3)
+selected_classes = []
+for i, name in enumerate(all_classes):
+    key = f"class_{name}"
+    st.session_state.setdefault(key, True)
+    if checkbox_cols[i % 3].checkbox(name, key=key):
+        selected_classes.append(name)
 
 if not selected_classes:
     st.info("Chọn ít nhất 1 lớp để tiếp tục.")
@@ -97,15 +92,6 @@ if not selected_classes:
 
 # --- Step 3: Generate ---
 st.subheader("3. Tạo giáo án")
-timeout_seconds = st.number_input(
-    "Thời gian tối đa cho mỗi lớp (giây)",
-    min_value=30,
-    max_value=900,
-    value=180,
-    step=30,
-    help="Lớp chạy quá thời gian này sẽ bị bỏ qua.",
-)
-
 if st.button("🚀 Bắt đầu tạo", type="primary", use_container_width=True):
     output_dir = workdir / "output"
     if output_dir.exists():
@@ -142,11 +128,11 @@ if st.button("🚀 Bắt đầu tạo", type="primary", use_container_width=True
             text=True,
         )
         try:
-            log, _ = proc.communicate(timeout=timeout_seconds)
+            log, _ = proc.communicate(timeout=TIMEOUT_SECONDS)
         except subprocess.TimeoutExpired:
             proc.kill()
             log, _ = proc.communicate()
-            msg = f"Quá thời gian chờ ({timeout_seconds}s)"
+            msg = f"Quá thời gian chờ ({TIMEOUT_SECONDS}s)"
             errors.append((class_name, msg, log or ""))
             with status_box:
                 st.write(f"⏱️ {class_name} — {msg}, đã bỏ qua")
