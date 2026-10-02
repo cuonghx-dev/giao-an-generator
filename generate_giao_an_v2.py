@@ -36,9 +36,10 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 # Day columns in the schedule sheet: Mon-Fri = C-G.
 DAY_COLUMNS = {0: 3, 1: 4, 2: 5, 3: 6, 4: 7}
 
-# Teaching slots in the schedule, as (type_row, detail_row) pairs. The type
-# row holds the activity category, the detail row its specific name.
-TIME_SLOTS = [(8, 9), (10, 11), (12, 13), (14, 15), (21, 22), (23, 24)]
+# A time-slot row has its time range ("8h30 - 9h00") in column B. The row
+# itself holds the activity category, the row below it the specific name.
+# Slot rows differ between class sheets, so they are found per sheet.
+TIME_CELL = re.compile(r'^\s*\d{1,2}\s*h', re.IGNORECASE)
 
 # A slot is dropped when its type or name contains one of these.
 SKIP_KEYWORDS = [
@@ -149,7 +150,8 @@ SECTION_HEADINGS = [
 
 NUMBERED_LINE = re.compile(r'^\s*([IVX]+|\d+)\s*[\.\)]\s*(.*)$')
 ACTIVITY_TITLE = re.compile(r'^\s*hoạt động\s*\d+\s*[:.]?\s*(.*)$', re.IGNORECASE)
-WEEK_HEADER = re.compile(r'^\s*tuần\s*(\d+)\s*$', re.IGNORECASE)
+# A week header may carry the theme after the number: "TUẦN 1- GIA ĐÌNH".
+WEEK_HEADER = re.compile(r'^\s*tuần\s*(\d+)\s*(?:[-–:].*)?$', re.IGNORECASE)
 
 
 # ============================================================
@@ -270,16 +272,17 @@ def split_steps(text):
     )
 
 
-def parse_content(content_path, week=None):
-    """Parse the content workbook into {activity name: activity dict}.
+def parse_content(content_path):
+    """Parse the content workbook into {week number: {activity name: activity}}.
 
-    When `week` is given, only that week's section is read.
+    Activities written above the first week header (or in a workbook with no
+    week headers at all) land under week `None`.
     """
     wb = openpyxl.load_workbook(content_path, data_only=True)
     ws = wb[wb.sheetnames[0]]
     last_col = ws.max_column
 
-    activities = {}
+    by_week = {}
     current_week = None
     current_category = None
 
@@ -299,8 +302,6 @@ def parse_content(content_path, week=None):
 
         if label not in HEADER_ROW_LABELS:
             continue
-        if week is not None and current_week != week:
-            continue
 
         # This is the field-label row: titles sit above it, values below it.
         title_row, data_row = row - 1, row + 1
@@ -310,9 +311,25 @@ def parse_content(content_path, week=None):
                 continue
             activity['category'] = current_category
             activity['week'] = current_week
-            activities.setdefault(activity['name'], activity)
+            by_week.setdefault(current_week, {}).setdefault(activity['name'], activity)
 
-    return activities
+    return by_week
+
+
+def merge_weeks(by_week, first_week=None):
+    """Flatten {week: {name: activity}} into one {name: activity} pool.
+
+    `first_week` is laid down first so its version of a name that repeats
+    every week ("Ngôi sao của tuần") wins over the other weeks'.
+    """
+    merged = {}
+    order = ([first_week] if first_week in by_week else []) + [
+        w for w in sorted(by_week, key=lambda w: (w is None, w)) if w != first_week
+    ]
+    for week in order:
+        for name, activity in by_week[week].items():
+            merged.setdefault(name, activity)
+    return merged
 
 
 def parse_block(ws, title_row, header_row, data_row, min_col, max_col):
@@ -367,10 +384,24 @@ def clean_type(value):
 
 def should_skip(act_type, detail):
     """Skip foreign-teacher slots, free play, routines and unknown types."""
-    combined = nfc(f'{act_type} {detail}')
-    if any(nfc(kw) in combined for kw in SKIP_KEYWORDS):
+    combined = nfc(f'{act_type} {detail}').lower()
+    if any(nfc(kw).lower() in combined for kw in SKIP_KEYWORDS):
         return True
     return label_key(act_type) not in TYPE_TO_CATEGORY
+
+
+def find_time_slots(ws):
+    """(type_row, detail_row) pairs of the teaching slots of a schedule sheet."""
+    def is_time_row(row):
+        return bool(TIME_CELL.match(str(ws.cell(row=row, column=2).value or '')))
+
+    slots = []
+    for row in range(5, ws.max_row + 1):
+        if label_key(ws.cell(row=row, column=2).value) == 'ghi chú':
+            break
+        if is_time_row(row) and not is_time_row(row + 1):
+            slots.append((row, row + 1))
+    return slots
 
 
 def parse_schedule(schedule_path, class_name):
@@ -384,7 +415,8 @@ def parse_schedule(schedule_path, class_name):
     ws = wb[sheet_name]
 
     week_line = nfc(str(ws.cell(row=2, column=2).value or ''))
-    date_match = re.search(r'(\d+)/(\d+)\s*đến\s*(\d+)/(\d+)/(\d+)', week_line)
+    # The start date may carry its own year: "05/10/2026 đến 09/10/2026".
+    date_match = re.search(r'(\d+)/(\d+)(?:/\d+)?\s*đến\s*(\d+)/(\d+)/(\d+)', week_line)
     if not date_match:
         print(f'Không thể phân tích ngày từ: {week_line}')
         sys.exit(1)
@@ -399,10 +431,11 @@ def parse_schedule(schedule_path, class_name):
     teacher = teacher_match.group(1).split('-')[0].strip().rstrip("' ") if teacher_match else ''
 
     days = []
+    time_slots = find_time_slots(ws)
     for day_idx in range(5):
         col = DAY_COLUMNS[day_idx]
         activities = []
-        for type_row, detail_row in TIME_SLOTS:
+        for type_row, detail_row in time_slots:
             act_type = clean_type(ws.cell(row=type_row, column=col).value)
             detail = nfc(str(ws.cell(row=detail_row, column=col).value or '')).strip()
             if act_type and not should_skip(act_type, detail):
@@ -432,10 +465,17 @@ def candidate_names(detail):
     return [n for n in names if n]
 
 
-def find_activity(schedule_entry, activities):
-    """Find the content of a schedule entry, preferring its own category."""
+def find_activity(schedule_entry, activities, fallback=None):
+    """Find the content of a schedule entry, preferring its own category.
+
+    `fallback` is a wider pool (all weeks) searched only when the entry has
+    no match in `activities`: the week label of a schedule sheet is not
+    always right, and a lesson is sometimes taught a week off its plan.
+    """
     category = TYPE_TO_CATEGORY.get(label_key(schedule_entry['type']))
     pools = [{k: v for k, v in activities.items() if v['category'] == category}, activities]
+    if fallback:
+        pools += [{k: v for k, v in fallback.items() if v['category'] == category}, fallback]
 
     for pool in pools:
         if not pool:
@@ -693,17 +733,53 @@ def list_classes(schedule_path):
         print(f'  - {name}')
 
 
-def week_of(schedule_path, class_name):
-    """Week number from the theme line of a schedule sheet, e.g. "(Tuần 1)"."""
+def week_hints(schedule_path, class_name):
+    """Week numbers named in the theme line of a schedule sheet.
+
+    The line carries the week twice - "(Tuần 3) / My Body (Week 4)" - and the
+    two halves do not always agree, so both are returned as candidates.
+    """
     wb = openpyxl.load_workbook(schedule_path, data_only=True)
+    hints = []
     for sheet in wb.sheetnames:
         if sheet.strip() != class_name.strip():
             continue
         theme = nfc(str(wb[sheet].cell(row=3, column=2).value or ''))
-        match = re.search(r'\(\s*tuần\s*(\d+)\s*\)', theme, re.IGNORECASE)
-        if match:
-            return int(match.group(1))
-    return None
+        for match in re.finditer(r'\(\s*(?:tuần|week)\s*(\d+)\s*\)', theme, re.IGNORECASE):
+            number = int(match.group(1))
+            if number not in hints:
+                hints.append(number)
+    return hints
+
+
+def week_match_count(schedule, activities):
+    """How many of the week's schedule entries this content pool covers."""
+    return sum(
+        1 for day in schedule['days'] for entry in day['activities']
+        if find_activity(entry, activities)
+    )
+
+
+def pick_week(schedule, by_week, hints):
+    """Choose the content week that actually holds this schedule's lessons.
+
+    The theme line is the starting point, but it is often stale or
+    self-contradictory, so every week in the content workbook is scored by
+    how many of the schedule's activities it can supply and the best one
+    wins. Hints break ties.
+    """
+    weeks = [w for w in by_week if w is not None]
+    if not weeks:
+        return None
+
+    def rank(week):
+        hint_rank = hints.index(week) if week in hints else len(hints)
+        return (-week_match_count(schedule, by_week[week]), hint_rank, week)
+
+    best = min(weeks, key=rank)
+    if week_match_count(schedule, by_week[best]) == 0:
+        return hints[0] if hints else None
+    return best
 
 
 def generate(schedule_path, content_path, class_names, output_dir, location, week=None):
@@ -715,10 +791,17 @@ def generate(schedule_path, content_path, class_names, output_dir, location, wee
         print(f"Lớp '{class_name}'")
         schedule = parse_schedule(schedule_path, class_name)
 
-        class_week = week if week is not None else week_of(schedule_path, class_name)
-        activities = parse_content(content_path, class_week)
+        by_week = parse_content(content_path)
+        hints = week_hints(schedule_path, class_name)
+        class_week = week if week is not None else pick_week(schedule, by_week, hints)
+        if class_week is not None and class_week not in by_week:
+            print(f'  Cảnh báo: không có tuần {class_week} trong file nội dung')
+        activities = by_week.get(class_week, {})
+        all_activities = merge_weeks(by_week, class_week)
         week_label = f'tuần {class_week}' if class_week else 'tất cả các tuần'
         print(f"  Nội dung: {len(activities)} hoạt động ({week_label})")
+        if hints and class_week is not None and class_week not in hints[:1]:
+            print(f"  (Chủ đề ghi tuần {hints[0]}, nhưng nội dung khớp với tuần {class_week})")
 
         wb = openpyxl.Workbook()
         wb.remove(wb.active)
@@ -729,7 +812,7 @@ def generate(schedule_path, content_path, class_names, output_dir, location, wee
 
             entries = []
             for entry in day['activities']:
-                content = find_activity(entry, activities)
+                content = find_activity(entry, activities, all_activities)
                 entries.append({**entry, 'content': content})
                 status = '✓' if content else '✗ (không có nội dung)'
                 detail = entry['detail'].replace('\n', ' ')[:40]
