@@ -6,6 +6,7 @@ page per tool. Each tool also has its own CLI.
 | Tool | Page | CLI | Docs |
 |------|------|-----|------|
 | Soạn giáo án | `/giao-an` | `python3 -m tools.giao_an` | [docs/giao_an.md](docs/giao_an.md) |
+| Ghép ảnh hàng loạt | `/ghep-anh` | `python3 -m tools.ghep_anh` | [docs/ghep_anh.md](docs/ghep_anh.md) |
 
 ## Run
 
@@ -27,6 +28,7 @@ tools/
     __main__.py        # CLI: python3 -m tools.giao_an
     generator.py       # core logic, no Streamlit dependency
     page.py            # Streamlit page
+  ghep_anh/            # same layout: generator.py, page.py, __main__.py
 docs/                  # one doc per tool
 examples/              # sample input files
 ```
