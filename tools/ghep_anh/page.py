@@ -127,6 +127,17 @@ def render() -> None:
         return
     box = Box(x0, y0, x1, y1)
 
+    # Corner style of the photo inside the frame.
+    corner = st.radio("Góc ảnh", ["Vuông", "Bo góc"], horizontal=True, key=k("corner"))
+    radius = 0
+    if corner == "Bo góc":
+        max_radius = min(box.width, box.height) // 2
+        radius = st.slider(
+            "Độ bo góc (pixel) — chỉnh đến khi khớp với góc khung trên hình xem trước",
+            1, max_radius, min(max_radius, max(1, round(min(box.width, box.height) * 0.08))),
+            key=k(f"radius_{template_id}"),
+        )
+
     # --- Step 3: Photos ---
     st.subheader("3. Ảnh cần ghép")
     photo_uploads = st.file_uploader(
@@ -137,10 +148,8 @@ def render() -> None:
     )
 
     with st.expander("Tuỳ chọn", expanded=False):
-        c1, c2 = st.columns(2)
-        fit = c1.radio("Cách đặt ảnh", list(FIT_LABELS), format_func=FIT_LABELS.get, key=k("fit"))
-        radius = c2.number_input("Bo góc (pixel)", 0, min(box.width, box.height) // 2, 0,
-                                 key=k("radius"))
+        fit = st.radio("Cách đặt ảnh", list(FIT_LABELS), format_func=FIT_LABELS.get,
+                       horizontal=True, key=k("fit"))
         c3, c4 = st.columns(2)
         align_y = c3.selectbox("Giữ phần nào theo chiều dọc", list(ALIGN_Y), key=k("align_y"))
         align_x = c4.selectbox("Giữ phần nào theo chiều ngang", list(ALIGN_X), key=k("align_x"))

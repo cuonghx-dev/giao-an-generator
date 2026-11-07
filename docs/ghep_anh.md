@@ -21,10 +21,13 @@ Page `/ghep-anh`:
 2. Pick the frame. The tool detects rectangles with straight, sharp edges and
    numbers them on the preview; pick one, or choose "Tự chỉnh" and drag the
    sliders. Fine-tune any choice in "Chỉnh vị trí khung".
+   Then pick the corner style: "Vuông" (square) or "Bo góc" (rounded) with a
+   radius slider; adjust it until the photo's corners match the frame in the
+   preview.
 3. Upload the photos. The first one is previewed in the frame.
 4. Options: fill the frame (crop, default) or show the whole photo; which part
-   to keep when cropping (top/centre/bottom, left/centre/right); corner
-   radius; JPG or PNG; an extra multi-page PDF for printing.
+   to keep when cropping (top/centre/bottom, left/centre/right); JPG or PNG;
+   an extra multi-page PDF for printing.
 5. Generate, then download a zip (one file per photo, named after the photo)
    and/or the PDF.
 
