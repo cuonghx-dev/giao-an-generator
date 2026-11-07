@@ -2,7 +2,7 @@
 
 ## Overview
 
-`generate_giao_an_v2.py` builds lesson plan files from two inputs:
+`tools/giao_an/generator.py` builds lesson plan files from two inputs:
 
 - **Schedule file** (`.xlsx`) — one sheet per class, a Mon–Fri timetable
   (e.g. `Tuần 1_Thế giới rực rỡ sắc màu-Tuần 2 tháng 7.xlsx`)
@@ -211,16 +211,16 @@ Row heights are left unset so Excel auto-fits the wrapped text on open.
 
 ```bash
 # List the classes in a schedule file
-python3 generate_giao_an_v2.py -s "Tuần 1.xlsx" --list-classes
+python3 -m tools.giao_an -s "Tuần 1.xlsx" --list-classes
 
 # One class
-python3 generate_giao_an_v2.py \
+python3 -m tools.giao_an \
   -s "examples_new/Tuần 1_Thế giới rực rỡ sắc màu-Tuần 2 tháng 7.xlsx" \
   -c "examples_new/KH chi tiết.xlsx" \
   --class "Vega 6"
 
 # Every class, into a chosen directory
-python3 generate_giao_an_v2.py \
+python3 -m tools.giao_an \
   -s "Tuần 1.xlsx" -c "KH chi tiết.xlsx" --all -o output/
 ```
 

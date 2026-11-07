@@ -20,7 +20,7 @@ field of a block holds the whole lesson: numbered phases plus embedded
 "Đánh giá" and "Phân hóa" sections, which are split back out into the
 ĐÁNH GIÁ / PHÂN HÓA columns of the output.
 
-See docs/workflow.md for full documentation.
+See docs/giao_an.md for full documentation.
 """
 
 import argparse
