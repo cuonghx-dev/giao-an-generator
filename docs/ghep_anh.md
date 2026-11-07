@@ -24,6 +24,12 @@ Page `/ghep-anh`:
    Then pick the corner style: "Vuông" (square) or "Bo góc" (rounded) with a
    radius slider; adjust it until the photo's corners match the frame in the
    preview.
+   For a **tilted frame** (e.g. a reference design that already holds a
+   rotated photo), choose "Khung nghiêng (bấm 4 góc)" and click the 4
+   corners of that photo on the template, in any order ("↺ Chọn lại" to
+   start over). Each new photo is fitted to the frame's size, rounded if
+   asked, and warped onto those 4 corners, so it takes exactly the old
+   photo's place and tilt.
 3. Upload the photos. The first one is previewed in the frame.
 4. Options: fill the frame (crop, default) or show the whole photo; which part
    to keep when cropping (top/centre/bottom, left/centre/right); JPG or PNG;
@@ -41,10 +47,14 @@ python3 -m tools.ghep_anh -t template.png --detect
 
 # Place every photo into frame 2
 python3 -m tools.ghep_anh -t template.png -b 64,484,293,795 -o out --pdf photos/*.jpg
+
+# Tilted frame: its 4 corners, any order
+python3 -m tools.ghep_anh -t template.png -q "840,1050;1390,1120;1300,1830;740,1740" \
+    --radius 25 -o out photos/*.jpg
 ```
 
-Options: `-f png|jpg`, `--fit cover|contain`, `--align-x/--align-y 0..1`,
-`--radius PX`, `--pdf`.
+Options: `-q/--quad` (tilted frame, overrides `-b`), `-f png|jpg`,
+`--fit cover|contain`, `--align-x/--align-y 0..1`, `--radius PX`, `--pdf`.
 
 ## Frame detection
 

@@ -7,6 +7,7 @@ template.
 """
 
 import argparse
+import math
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -210,13 +211,79 @@ def compose(
     tile = fit_photo(photo, (box.width, box.height), fit, align)
     mask = tile.getchannel("A")
     if radius > 0:
-        rounded = Image.new("L", tile.size, 0)
-        ImageDraw.Draw(rounded).rounded_rectangle(
-            (0, 0, tile.width - 1, tile.height - 1), radius=radius, fill=255
-        )
-        mask = Image.composite(mask, rounded, rounded)
+        mask = rounded_mask(mask, radius)
     out.paste(tile, (box.left, box.top), mask)
     return out
+
+
+Point = tuple[float, float]
+
+
+def order_quad(points: list[Point]) -> list[Point]:
+    """Sort 4 clicked points into top-left, top-right, bottom-right, bottom-left."""
+    if len(points) != 4:
+        raise ValueError("A frame needs exactly 4 corners")
+    cx = sum(p[0] for p in points) / 4
+    cy = sum(p[1] for p in points) / 4
+    # Clockwise on screen (y grows downwards), starting anywhere...
+    pts = sorted(points, key=lambda p: math.atan2(p[1] - cy, p[0] - cx))
+    # ...then start from the corner nearest the top-left.
+    start = min(range(4), key=lambda i: pts[i][0] + pts[i][1])
+    return pts[start:] + pts[:start]
+
+
+def _perspective_coeffs(src: list[Point], dst: list[Point]) -> list[float]:
+    """Coefficients for ``Image.transform(PERSPECTIVE)`` mapping dst points to src."""
+    rows, rhs = [], []
+    for (x, y), (u, v) in zip(dst, src):
+        rows.append([x, y, 1, 0, 0, 0, -u * x, -u * y])
+        rows.append([0, 0, 0, x, y, 1, -v * x, -v * y])
+        rhs += [u, v]
+    return np.linalg.solve(np.array(rows, float), np.array(rhs, float)).tolist()
+
+
+def compose_quad(
+    template: Image.Image,
+    photo: Image.Image,
+    quad: list[Point],
+    fit: str = FIT_COVER,
+    align: tuple[float, float] = (0.5, 0.5),
+    radius: int = 0,
+) -> Image.Image:
+    """Place ``photo`` into a 4-corner frame, e.g. a tilted photo in the template.
+
+    The photo is fitted to the frame's size, given rounded corners, then
+    warped onto the quadrilateral (rotation, and any perspective, included).
+    """
+    tl, tr, br, bl = order_quad(quad)
+    width = round((math.dist(tl, tr) + math.dist(bl, br)) / 2)
+    height = round((math.dist(tl, bl) + math.dist(tr, br)) / 2)
+    tile = fit_photo(photo, (width, height), fit, align)
+    if radius > 0:
+        tile.putalpha(rounded_mask(tile.getchannel("A"), radius))
+
+    # Warp only over the frame's bounding box, then paste it there.
+    xs, ys = [p[0] for p in (tl, tr, br, bl)], [p[1] for p in (tl, tr, br, bl)]
+    left, top = math.floor(min(xs)), math.floor(min(ys))
+    right, bottom = math.ceil(max(xs)), math.ceil(max(ys))
+    local = [(x - left, y - top) for x, y in (tl, tr, br, bl)]
+    corners = [(0, 0), (width, 0), (width, height), (0, height)]
+    warped = tile.transform(
+        (right - left, bottom - top), Image.Transform.PERSPECTIVE,
+        _perspective_coeffs(corners, local), Image.Resampling.BICUBIC,
+    )
+    out = template.convert("RGBA")
+    out.alpha_composite(warped, (left, top))
+    return out
+
+
+def rounded_mask(mask: Image.Image, radius: int) -> Image.Image:
+    """Clear the corners of an ``L`` mask outside a rounded rectangle."""
+    rounded = Image.new("L", mask.size, 0)
+    ImageDraw.Draw(rounded).rounded_rectangle(
+        (0, 0, mask.width - 1, mask.height - 1), radius=radius, fill=255
+    )
+    return Image.composite(mask, rounded, rounded)
 
 
 def save_image(img: Image.Image, path: Path) -> Path:
@@ -257,6 +324,11 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--detect", action="store_true", help="Print detected frames and exit"
     )
+    parser.add_argument(
+        "-q", "--quad",
+        type=lambda t: [tuple(map(float, p.split(","))) for p in t.split(";")],
+        help="Tilted frame as 4 corners 'x,y;x,y;x,y;x,y' (any order); overrides --box",
+    )
     parser.add_argument("-o", "--output", type=Path, default=Path("output"), help="Output dir")
     parser.add_argument("-f", "--format", choices=["png", "jpg"], default="jpg")
     parser.add_argument("--fit", choices=FITS, default=FIT_COVER)
@@ -272,17 +344,21 @@ def main(argv: list[str] | None = None) -> None:
         for i, b in enumerate(detect_frames(template), 1):
             print(f"{i}: {b.left},{b.top},{b.right},{b.bottom}  ({b.width}x{b.height})")
         return
-    if args.box is None or not args.photos:
-        parser.error("--box and at least one photo are required (or use --detect)")
-    args.box.validate(template.size)
+    if (args.box is None and args.quad is None) or not args.photos:
+        parser.error("--box or --quad, and at least one photo, are required (or use --detect)")
+    if args.quad is None:
+        args.box.validate(template.size)
     args.output.mkdir(parents=True, exist_ok=True)
 
     results = []
     for photo_path in args.photos:
-        img = compose(
-            template, load_image(photo_path), args.box,
-            args.fit, (args.align_x, args.align_y), args.radius,
-        )
+        align = (args.align_x, args.align_y)
+        if args.quad:
+            img = compose_quad(template, load_image(photo_path), args.quad,
+                               args.fit, align, args.radius)
+        else:
+            img = compose(template, load_image(photo_path), args.box,
+                          args.fit, align, args.radius)
         out = save_image(img, args.output / output_name(photo_path, args.format))
         results.append(img)
         print(f"OK {photo_path.name} -> {out}")

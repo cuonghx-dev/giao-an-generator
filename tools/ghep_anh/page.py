@@ -2,10 +2,13 @@
 
 import hashlib
 import io
+import math
+from functools import partial
 from pathlib import Path
 
 import streamlit as st
 from PIL import Image, ImageDraw, ImageFont
+from streamlit_image_coordinates import streamlit_image_coordinates
 
 from tools.common import tool_state, tool_workdir, zip_files
 from tools.ghep_anh.generator import (
@@ -15,14 +18,18 @@ from tools.ghep_anh.generator import (
     PHOTO_EXTENSIONS,
     Box,
     compose,
+    compose_quad,
     detect_frames,
     load_image,
+    order_quad,
     save_image,
     save_pdf,
 )
 
 SLUG = "ghep-anh"
 MANUAL = "manual"
+MODE_STRAIGHT = "Khung thẳng (tự tìm)"
+MODE_TILTED = "Khung nghiêng (bấm 4 góc)"
 PREVIEW_WIDTH = 900  # px; previews are downscaled to keep the page snappy
 
 ALIGN_Y = {"Giữa": 0.5, "Trên": 0.0, "Dưới": 1.0}
@@ -59,6 +66,48 @@ def _draw_boxes(template: Image.Image, boxes: list[Box], selected: Box | None) -
         draw.rectangle((selected.left, selected.top, selected.right - 1, selected.bottom - 1),
                        outline="red", width=line * 2)
     return img
+
+
+def _draw_points(template: Image.Image, points: list[tuple[float, float]]) -> Image.Image:
+    """Mark clicked corners, and the frame outline once all 4 are in."""
+    img = template.convert("RGB")
+    draw = ImageDraw.Draw(img)
+    line = max(2, template.width // 250)
+    dot = line * 4
+    if len(points) == 4:
+        draw.polygon(order_quad(points), outline="red", width=line * 2)
+    for x, y in points:
+        draw.ellipse((x - dot, y - dot, x + dot, y + dot), fill="red", outline="white", width=line)
+    return img
+
+
+def _pick_corners(template: Image.Image, template_id: str) -> list[tuple[float, float]]:
+    """Clickable template: collect up to 4 corner points (template pixels)."""
+    pts_key, last_key = k(f"pts_{template_id}"), k(f"last_click_{template_id}")
+    points: list[tuple[float, float]] = st.session_state.setdefault(pts_key, [])
+
+    c1, c2 = st.columns([3, 1])
+    c1.markdown(
+        f"Bấm lần lượt vào **4 góc của ảnh chụp có sẵn** trong mẫu "
+        f"(thứ tự nào cũng được), bấm sát hoặc hơi ra ngoài góc để che kín ảnh cũ — "
+        f"đã chọn **{len(points)}/4**."
+    )
+    if c2.button("↺ Chọn lại", key=k(f"reset_{template_id}"), width="stretch"):
+        points.clear()
+        st.session_state.pop(last_key, None)
+        st.rerun()
+
+    shown = _preview(_draw_points(template, points))
+    click = streamlit_image_coordinates(
+        shown, width="stretch", key=k(f"click_{template_id}"), cursor="crosshair",
+    )
+    # The component re-sends its last click on every rerun; act on new ones only.
+    if click and click.get("unix_time") != st.session_state.get(last_key) and len(points) < 4:
+        st.session_state[last_key] = click.get("unix_time")
+        ratio = template.width / click["width"]
+        points.append((click["x"] * ratio, click["y"] * ratio))
+        st.rerun()
+    return points
 
 
 def _unique_names(names: list[str], ext: str) -> list[str]:
@@ -98,6 +147,19 @@ def render() -> None:
 
     # --- Step 2: Frame ---
     st.subheader("2. Chọn khung ảnh")
+    mode = st.radio("Kiểu khung", [MODE_STRAIGHT, MODE_TILTED], horizontal=True,
+                    key=k(f"mode_{template_id}"))
+    if mode == MODE_TILTED:
+        points = _pick_corners(template, template_id)
+        if len(points) < 4:
+            st.info("Chọn đủ 4 góc để tiếp tục.")
+            return
+        quad = order_quad(points)
+        radius = _radius_input(template_id, min(math.dist(quad[0], quad[1]),
+                                                math.dist(quad[0], quad[3])))
+        _rest(template, partial(compose_quad, quad=quad, radius=radius), None)
+        return
+
     with st.spinner("Đang tìm khung ảnh..."):
         candidates = [Box(*b) for b in _detect(template_bytes)]
 
@@ -127,17 +189,29 @@ def render() -> None:
         return
     box = Box(x0, y0, x1, y1)
 
-    # Corner style of the photo inside the frame.
-    corner = st.radio("Góc ảnh", ["Vuông", "Bo góc"], horizontal=True, key=k("corner"))
-    radius = 0
-    if corner == "Bo góc":
-        max_radius = min(box.width, box.height) // 2
-        radius = st.slider(
-            "Độ bo góc (pixel) — chỉnh đến khi khớp với góc khung trên hình xem trước",
-            1, max_radius, min(max_radius, max(1, round(min(box.width, box.height) * 0.08))),
-            key=k(f"radius_{template_id}"),
-        )
+    radius = _radius_input(template_id, min(box.width, box.height))
+    _rest(template, partial(compose, box=box, radius=radius),
+          _draw_boxes(template, candidates, box))
 
+
+def _radius_input(template_id: str, short_side: float) -> int:
+    """Corner style of the photo inside the frame: square, or rounded by N px."""
+    corner = st.radio("Góc ảnh", ["Vuông", "Bo góc"], horizontal=True, key=k("corner"))
+    if corner != "Bo góc":
+        return 0
+    max_radius = max(1, int(short_side) // 2)
+    return st.slider(
+        "Độ bo góc (pixel) — chỉnh đến khi khớp với góc khung trên hình xem trước",
+        1, max_radius, min(max_radius, max(1, round(short_side * 0.08))),
+        key=k(f"radius_{template_id}"),
+    )
+
+
+def _rest(template: Image.Image, place, frame_preview: Image.Image | None) -> None:
+    """Steps 3-4: photos, options, preview, generate.
+
+    ``place(template, photo, fit=..., align=...)`` puts one photo in the frame.
+    """
     # --- Step 3: Photos ---
     st.subheader("3. Ảnh cần ghép")
     photo_uploads = st.file_uploader(
@@ -158,13 +232,16 @@ def render() -> None:
         want_pdf = c6.checkbox("Kèm 1 file PDF gộp tất cả (để in)", value=True, key=k("pdf"))
     align = (ALIGN_X[align_x], ALIGN_Y[align_y])
 
-    # Preview: frames on the template, and the first photo placed in the frame.
+    # Preview: the frame on the template, and the first photo placed in it.
     col_a, col_b = st.columns(2)
-    col_a.image(_preview(_draw_boxes(template, candidates, box)),
-                caption="Khung đang chọn (viền đỏ)", width="stretch")
+    if frame_preview is not None:
+        col_a.image(_preview(frame_preview), caption="Khung đang chọn (viền đỏ)",
+                    width="stretch")
+    else:
+        col_b = col_a
     if photo_uploads:
         try:
-            sample = compose(template, load_image(photo_uploads[0]), box, fit, align, radius)
+            sample = place(template, load_image(photo_uploads[0]), fit=fit, align=align)
             col_b.image(_preview(sample), caption=f"Xem trước: {photo_uploads[0].name}",
                         width="stretch")
         except Exception as e:
@@ -177,12 +254,12 @@ def render() -> None:
     # --- Step 4: Generate ---
     st.subheader("4. Tạo ảnh")
     if st.button(f"🚀 Ghép {len(photo_uploads)} ảnh", type="primary", width="stretch"):
-        _generate(template, photo_uploads, box, fit, align, radius, fmt, want_pdf)
+        _generate(template, photo_uploads, partial(place, fit=fit, align=align), fmt, want_pdf)
 
     _show_results()
 
 
-def _generate(template, uploads, box, fit, align, radius, fmt, want_pdf) -> None:
+def _generate(template, uploads, place, fmt, want_pdf) -> None:
     output_dir = tool_workdir(SLUG) / "output"
     output_dir.mkdir(parents=True, exist_ok=True)
     for f in output_dir.iterdir():
@@ -196,7 +273,7 @@ def _generate(template, uploads, box, fit, align, radius, fmt, want_pdf) -> None
     for i, (upload, name) in enumerate(zip(uploads, names)):
         progress.progress(i / len(uploads), text=f"({i + 1}/{len(uploads)}) {upload.name}")
         try:
-            img = compose(template, load_image(upload), box, fit, align, radius)
+            img = place(template, load_image(upload))
         except Exception as e:
             errors.append(f"{upload.name}: {e}")
             continue
